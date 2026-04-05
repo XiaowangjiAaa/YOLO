@@ -1,0 +1,28 @@
+# YOLO11 + SCSegamba-inspired SAVSS blocks
+# Use with a parser that maps C2fSAVSS -> ultralytics.nn.modules.C2fSAVSS
+
+nc: 80
+scales:
+  n: [0.50, 0.25, 1024]
+  s: [0.50, 0.50, 1024]
+
+backbone:
+  - [-1, 1, Conv, [64, 3, 2]]
+  - [-1, 1, Conv, [128, 3, 2]]
+  - [-1, 2, C2fSAVSS, [128, 2]]
+  - [-1, 1, Conv, [256, 3, 2]]
+  - [-1, 4, C2fSAVSS, [256, 2]]
+  - [-1, 1, Conv, [512, 3, 2]]
+  - [-1, 4, C2fSAVSS, [512, 2]]
+  - [-1, 1, Conv, [1024, 3, 2]]
+  - [-1, 2, C2fSAVSS, [1024, 1]]
+
+head:
+  - [-1, 1, SPPF, [1024, 5]]
+  - [-1, 1, nn.Upsample, [None, 2, nearest]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 2, C2fSAVSS, [512, 1]]
+  - [-1, 1, nn.Upsample, [None, 2, nearest]]
+  - [[-1, 4], 1, Concat, [1]]
+  - [-1, 2, C2fSAVSS, [256, 1]]
+  - [[16, 13, 10], 1, Detect, [nc]]
