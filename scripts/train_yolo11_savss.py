@@ -1,4 +1,9 @@
-"""Train local YOLO11-SAVSS model without external ultralytics package."""
+"""Train local YOLO11-SAVSS model (SCSegamba-style strategy).
+
+Key strategy borrowed from SCSegamba `main.py`:
+- Hybrid loss with configurable BCELoss_ratio + DiceLoss_ratio.
+- PolyLR scheduler.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +14,7 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train local YOLO11-SAVSS segmentation model")
     p.add_argument("--dataset-root", type=Path, required=True, help="Root with train_img/train_lab and val_img/val_lab")
-    p.add_argument("--epochs", type=int, default=100)
+    p.add_argument("--epochs", type=int, default=200)
     p.add_argument("--batch-size", type=int, default=8)
     p.add_argument("--image-size", type=int, default=512)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -18,7 +23,42 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--base-ch", type=int, default=32)
     p.add_argument("--save-dir", type=Path, default=Path("runs/local_yolo11_savss"))
+
+    # SCSegamba-like loss coefficients.
+    p.add_argument("--BCELoss-ratio", type=float, default=0.5)
+    p.add_argument("--DiceLoss-ratio", type=float, default=0.5)
+
+    # PolyLR parameters.
+    p.add_argument("--poly-power", type=float, default=0.9)
+    p.add_argument("--min-lr", type=float, default=1e-6)
+
     return p.parse_args()
+
+
+def dice_loss_from_logits(logits, target, smooth: float = 1e-6):
+    import torch
+
+    prob = torch.sigmoid(logits)
+    inter = (prob * target).sum(dim=(1, 2, 3))
+    denom = prob.sum(dim=(1, 2, 3)) + target.sum(dim=(1, 2, 3))
+    dice = (2 * inter + smooth) / (denom + smooth)
+    return 1.0 - dice.mean()
+
+
+def hybrid_loss(logits, target, bce_ratio: float, dice_ratio: float):
+    import torch
+
+    bce = torch.nn.functional.binary_cross_entropy_with_logits(logits, target)
+    dloss = dice_loss_from_logits(logits, target)
+    total = bce_ratio * bce + dice_ratio * dloss
+    return total, bce.detach(), dloss.detach()
+
+
+def poly_lr(base_lr: float, cur_iter: int, max_iter: int, power: float, min_lr: float = 0.0) -> float:
+    if max_iter <= 0:
+        return base_lr
+    factor = (1.0 - float(cur_iter) / float(max_iter)) ** power
+    return max(min_lr, base_lr * factor)
 
 
 def _dice_iou_from_logits(logits, target):
@@ -53,8 +93,10 @@ def main() -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     model = YOLO11SAVSSSeg(base_ch=args.base_ch).to(device)
-    criterion = torch.nn.BCEWithLogitsLoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    total_iters = args.epochs * max(1, len(train_loader))
+    cur_iter = 0
 
     best_iou = -1.0
     best_path = args.save_dir / "best.pt"
@@ -63,23 +105,43 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
         model.train()
         train_loss = 0.0
+        train_bce = 0.0
+        train_dice_loss = 0.0
 
         for x, y in train_loader:
+            cur_iter += 1
+            lr = poly_lr(args.lr, cur_iter, total_iters, args.poly_power, args.min_lr)
+            for g in optimizer.param_groups:
+                g["lr"] = lr
+
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
             logits = model(x)
-            loss = criterion(logits, y)
+            loss, bce_v, dloss_v = hybrid_loss(
+                logits,
+                y,
+                bce_ratio=args.BCELoss_ratio,
+                dice_ratio=args.DiceLoss_ratio,
+            )
             loss.backward()
             optimizer.step()
 
-            train_loss += loss.item() * x.size(0)
+            bs = x.size(0)
+            train_loss += loss.item() * bs
+            train_bce += bce_v.item() * bs
+            train_dice_loss += dloss_v.item() * bs
 
-        train_loss /= len(train_loader.dataset)
+        n_train = len(train_loader.dataset)
+        train_loss /= n_train
+        train_bce /= n_train
+        train_dice_loss /= n_train
 
         model.eval()
         val_loss = 0.0
+        val_bce = 0.0
+        val_dice_loss = 0.0
         val_dice = 0.0
         val_iou = 0.0
 
@@ -89,16 +151,27 @@ def main() -> None:
                 y = y.to(device, non_blocking=True)
 
                 logits = model(x)
-                loss = criterion(logits, y)
+                loss, bce_v, dloss_v = hybrid_loss(
+                    logits,
+                    y,
+                    bce_ratio=args.BCELoss_ratio,
+                    dice_ratio=args.DiceLoss_ratio,
+                )
                 dice, iou = _dice_iou_from_logits(logits, y)
 
-                val_loss += loss.item() * x.size(0)
-                val_dice += dice * x.size(0)
-                val_iou += iou * x.size(0)
+                bs = x.size(0)
+                val_loss += loss.item() * bs
+                val_bce += bce_v.item() * bs
+                val_dice_loss += dloss_v.item() * bs
+                val_dice += dice * bs
+                val_iou += iou * bs
 
-        val_loss /= len(val_loader.dataset)
-        val_dice /= len(val_loader.dataset)
-        val_iou /= len(val_loader.dataset)
+        n_val = len(val_loader.dataset)
+        val_loss /= n_val
+        val_bce /= n_val
+        val_dice_loss /= n_val
+        val_dice /= n_val
+        val_iou /= n_val
 
         ckpt = {
             "epoch": epoch,
@@ -115,8 +188,11 @@ def main() -> None:
             torch.save(ckpt, best_path)
 
         print(
-            f"[epoch {epoch:03d}] train_loss={train_loss:.4f} "
-            f"val_loss={val_loss:.4f} val_dice={val_dice:.4f} val_iou={val_iou:.4f}"
+            f"[epoch {epoch:03d}] "
+            f"lr={optimizer.param_groups[0]['lr']:.6g} "
+            f"train_loss={train_loss:.4f} (bce={train_bce:.4f}, dice_loss={train_dice_loss:.4f}) "
+            f"val_loss={val_loss:.4f} (bce={val_bce:.4f}, dice_loss={val_dice_loss:.4f}) "
+            f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}"
         )
 
     print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path}")

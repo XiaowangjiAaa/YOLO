@@ -44,6 +44,21 @@ python scripts/train_yolo11_savss.py \
   --device cuda
 ```
 
+
+### 训练策略（对齐 SCSegamba 思路）
+
+当前训练脚本默认使用：
+
+- `HybridLoss = BCELoss_ratio * BCEWithLogits + DiceLoss_ratio * DiceLoss`
+- `lr_scheduler = PolyLR`（按迭代数衰减）
+
+可通过参数调整：
+
+- `--BCELoss-ratio`
+- `--DiceLoss-ratio`
+- `--poly-power`
+- `--min-lr`
+
 ## 预测
 
 ```bash
