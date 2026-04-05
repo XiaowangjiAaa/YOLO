@@ -3,11 +3,18 @@
 Key strategy borrowed from SCSegamba `main.py`:
 - Hybrid loss with configurable BCELoss_ratio + DiceLoss_ratio.
 - PolyLR scheduler.
+
+Extra utilities added:
+- Per-iteration progress visualization (tqdm if available, fallback prints).
+- Epoch-level CSV logging.
+- Validation sample mask visualization during training.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import time
 from pathlib import Path
 
 
@@ -31,6 +38,11 @@ def parse_args() -> argparse.Namespace:
     # PolyLR parameters.
     p.add_argument("--poly-power", type=float, default=0.9)
     p.add_argument("--min-lr", type=float, default=1e-6)
+
+    # Visualization/progress options.
+    p.add_argument("--log-interval", type=int, default=20, help="Print interval when tqdm is unavailable")
+    p.add_argument("--vis-interval", type=int, default=5, help="Save val visualizations every N epochs")
+    p.add_argument("--num-vis-samples", type=int, default=4, help="Number of val samples to visualize")
 
     return p.parse_args()
 
@@ -75,6 +87,59 @@ def _dice_iou_from_logits(logits, target):
     return dice.mean().item(), iou.mean().item()
 
 
+def _save_val_visualizations(model, loader, device, save_dir: Path, epoch: int, num_samples: int = 4):
+    import numpy as np
+    import torch
+    from PIL import Image
+
+    model.eval()
+    vis_dir = save_dir / "val_vis"
+    vis_dir.mkdir(parents=True, exist_ok=True)
+
+    saved = 0
+    with torch.no_grad():
+        for x, y in loader:
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+            logits = model(x)
+            pred = (torch.sigmoid(logits) > 0.5).float()
+
+            x_np = (x.detach().cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+            y_np = (y.detach().cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+            p_np = (pred.detach().cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
+
+            bs = x_np.shape[0]
+            for i in range(bs):
+                rgb = np.transpose(x_np[i], (1, 2, 0))
+                gt = y_np[i, 0]
+                pd = p_np[i, 0]
+                panel = np.concatenate([rgb, np.stack([gt] * 3, axis=-1), np.stack([pd] * 3, axis=-1)], axis=1)
+                out = Image.fromarray(panel)
+                out.save(vis_dir / f"epoch{epoch:03d}_sample{saved:03d}.png")
+                saved += 1
+                if saved >= num_samples:
+                    return
+
+
+def _build_progress_iter(loader, epoch: int, epochs: int):
+    try:
+        from tqdm import tqdm
+
+        return tqdm(loader, desc=f"Epoch {epoch}/{epochs}", dynamic_ncols=True)
+    except Exception:
+        return loader
+
+
+def _append_csv_log(csv_path: Path, row: dict):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    write_header = not csv_path.exists()
+    with csv_path.open("a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=list(row.keys()))
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -101,14 +166,18 @@ def main() -> None:
     best_iou = -1.0
     best_path = args.save_dir / "best.pt"
     last_path = args.save_dir / "last.pt"
+    log_csv = args.save_dir / "train_log.csv"
 
     for epoch in range(1, args.epochs + 1):
+        t0 = time.time()
         model.train()
         train_loss = 0.0
         train_bce = 0.0
         train_dice_loss = 0.0
 
-        for x, y in train_loader:
+        progress_iter = _build_progress_iter(train_loader, epoch, args.epochs)
+
+        for step, (x, y) in enumerate(progress_iter, start=1):
             cur_iter += 1
             lr = poly_lr(args.lr, cur_iter, total_iters, args.poly_power, args.min_lr)
             for g in optimizer.param_groups:
@@ -132,6 +201,14 @@ def main() -> None:
             train_loss += loss.item() * bs
             train_bce += bce_v.item() * bs
             train_dice_loss += dloss_v.item() * bs
+
+            if hasattr(progress_iter, "set_postfix"):
+                progress_iter.set_postfix(loss=f"{loss.item():.4f}", lr=f"{lr:.2e}")
+            elif step % max(1, args.log_interval) == 0:
+                print(
+                    f"[epoch {epoch:03d} step {step:04d}/{len(train_loader):04d}] "
+                    f"loss={loss.item():.4f} lr={lr:.2e}"
+                )
 
         n_train = len(train_loader.dataset)
         train_loss /= n_train
@@ -187,15 +264,35 @@ def main() -> None:
             ckpt["best_iou"] = best_iou
             torch.save(ckpt, best_path)
 
+        if args.vis_interval > 0 and (epoch % args.vis_interval == 0 or epoch == 1 or epoch == args.epochs):
+            _save_val_visualizations(model, val_loader, device, args.save_dir, epoch, args.num_vis_samples)
+
+        elapsed = time.time() - t0
+        log_row = {
+            "epoch": epoch,
+            "lr": optimizer.param_groups[0]["lr"],
+            "train_loss": train_loss,
+            "train_bce": train_bce,
+            "train_dice_loss": train_dice_loss,
+            "val_loss": val_loss,
+            "val_bce": val_bce,
+            "val_dice_loss": val_dice_loss,
+            "val_dice": val_dice,
+            "val_iou": val_iou,
+            "elapsed_sec": elapsed,
+        }
+        _append_csv_log(log_csv, log_row)
+
         print(
             f"[epoch {epoch:03d}] "
+            f"time={elapsed:.1f}s "
             f"lr={optimizer.param_groups[0]['lr']:.6g} "
             f"train_loss={train_loss:.4f} (bce={train_bce:.4f}, dice_loss={train_dice_loss:.4f}) "
             f"val_loss={val_loss:.4f} (bce={val_bce:.4f}, dice_loss={val_dice_loss:.4f}) "
             f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}"
         )
 
-    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path}")
+    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path} log_csv={log_csv}")
 
 
 if __name__ == "__main__":

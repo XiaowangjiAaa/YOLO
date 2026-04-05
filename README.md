@@ -59,6 +59,20 @@ python scripts/train_yolo11_savss.py \
 - `--poly-power`
 - `--min-lr`
 
+
+### 训练过程可视化与日志
+
+训练时会额外产出：
+
+- `runs/local_yolo11_savss/train_log.csv`：每个 epoch 的 loss / dice / iou / lr / 耗时。
+- `runs/local_yolo11_savss/val_vis/`：验证集可视化（拼接 `RGB | GT Mask | Pred Mask`）。
+
+可调参数：
+
+- `--vis-interval`：每隔多少个 epoch 保存一次可视化。
+- `--num-vis-samples`：每次保存多少张样本。
+- `--log-interval`：当环境无 `tqdm` 时，控制 step 级打印频率。
+
 ## 预测
 
 ```bash
