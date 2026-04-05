@@ -1,14 +1,4 @@
-"""Train local YOLO11-SAVSS model (SCSegamba-style strategy).
-
-Key strategy borrowed from SCSegamba `main.py`:
-- Hybrid loss with configurable BCELoss_ratio + DiceLoss_ratio.
-- PolyLR scheduler.
-
-Extra utilities added:
-- Per-iteration progress visualization (tqdm if available, fallback prints).
-- Epoch-level CSV logging.
-- Validation sample mask visualization during training.
-"""
+"""Train local YOLO11-SAVSS model (high-fidelity replica strategy)."""
 
 from __future__ import annotations
 
@@ -31,19 +21,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--base-ch", type=int, default=32)
     p.add_argument("--save-dir", type=Path, default=Path("runs/local_yolo11_savss"))
 
-    # SCSegamba-like loss coefficients.
     p.add_argument("--BCELoss-ratio", type=float, default=0.5)
     p.add_argument("--DiceLoss-ratio", type=float, default=0.5)
-
-    # PolyLR parameters.
     p.add_argument("--poly-power", type=float, default=0.9)
     p.add_argument("--min-lr", type=float, default=1e-6)
 
-    # Visualization/progress options.
-    p.add_argument("--log-interval", type=int, default=20, help="Print interval when tqdm is unavailable")
-    p.add_argument("--vis-interval", type=int, default=5, help="Save val visualizations every N epochs")
-    p.add_argument("--num-vis-samples", type=int, default=4, help="Number of val samples to visualize")
+    p.add_argument("--deep-supervision", action="store_true", default=True)
+    p.add_argument("--aux-weight", type=float, default=0.4, help="Weight for auxiliary heads")
 
+    p.add_argument("--log-interval", type=int, default=20)
+    p.add_argument("--vis-interval", type=int, default=5)
+    p.add_argument("--num-vis-samples", type=int, default=4)
     return p.parse_args()
 
 
@@ -64,6 +52,24 @@ def hybrid_loss(logits, target, bce_ratio: float, dice_ratio: float):
     dloss = dice_loss_from_logits(logits, target)
     total = bce_ratio * bce + dice_ratio * dloss
     return total, bce.detach(), dloss.detach()
+
+
+def compute_total_loss(outputs, target, bce_ratio: float, dice_ratio: float, aux_weight: float = 0.4):
+    if isinstance(outputs, tuple):
+        main, *aux = outputs
+    else:
+        main, aux = outputs, []
+
+    total, bce, dloss = hybrid_loss(main, target, bce_ratio, dice_ratio)
+    aux_terms = []
+    for out in aux:
+        l_aux, _, _ = hybrid_loss(out, target, bce_ratio, dice_ratio)
+        aux_terms.append(l_aux)
+
+    if aux_terms:
+        aux_total = sum(aux_terms) / len(aux_terms)
+        total = total + aux_weight * aux_total
+    return total, bce, dloss, main
 
 
 def poly_lr(base_lr: float, cur_iter: int, max_iter: int, power: float, min_lr: float = 0.0) -> float:
@@ -101,7 +107,8 @@ def _save_val_visualizations(model, loader, device, save_dir: Path, epoch: int, 
         for x, y in loader:
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            logits = model(x)
+            outputs = model(x)
+            logits = outputs[0] if isinstance(outputs, tuple) else outputs
             pred = (torch.sigmoid(logits) > 0.5).float()
 
             x_np = (x.detach().cpu().numpy() * 255.0).clip(0, 255).astype("uint8")
@@ -114,8 +121,7 @@ def _save_val_visualizations(model, loader, device, save_dir: Path, epoch: int, 
                 gt = y_np[i, 0]
                 pd = p_np[i, 0]
                 panel = np.concatenate([rgb, np.stack([gt] * 3, axis=-1), np.stack([pd] * 3, axis=-1)], axis=1)
-                out = Image.fromarray(panel)
-                out.save(vis_dir / f"epoch{epoch:03d}_sample{saved:03d}.png")
+                Image.fromarray(panel).save(vis_dir / f"epoch{epoch:03d}_sample{saved:03d}.png")
                 saved += 1
                 if saved >= num_samples:
                     return
@@ -157,12 +163,11 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    model = YOLO11SAVSSSeg(base_ch=args.base_ch).to(device)
+    model = YOLO11SAVSSSeg(base_ch=args.base_ch, deep_supervision=args.deep_supervision).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     total_iters = args.epochs * max(1, len(train_loader))
     cur_iter = 0
-
     best_iou = -1.0
     best_path = args.save_dir / "best.pt"
     last_path = args.save_dir / "last.pt"
@@ -171,10 +176,7 @@ def main() -> None:
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
         model.train()
-        train_loss = 0.0
-        train_bce = 0.0
-        train_dice_loss = 0.0
-
+        train_loss = train_bce = train_dice_loss = 0.0
         progress_iter = _build_progress_iter(train_loader, epoch, args.epochs)
 
         for step, (x, y) in enumerate(progress_iter, start=1):
@@ -187,12 +189,13 @@ def main() -> None:
             y = y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
-            logits = model(x)
-            loss, bce_v, dloss_v = hybrid_loss(
-                logits,
+            outputs = model(x)
+            loss, bce_v, dloss_v, logits = compute_total_loss(
+                outputs,
                 y,
                 bce_ratio=args.BCELoss_ratio,
                 dice_ratio=args.DiceLoss_ratio,
+                aux_weight=args.aux_weight,
             )
             loss.backward()
             optimizer.step()
@@ -205,10 +208,7 @@ def main() -> None:
             if hasattr(progress_iter, "set_postfix"):
                 progress_iter.set_postfix(loss=f"{loss.item():.4f}", lr=f"{lr:.2e}")
             elif step % max(1, args.log_interval) == 0:
-                print(
-                    f"[epoch {epoch:03d} step {step:04d}/{len(train_loader):04d}] "
-                    f"loss={loss.item():.4f} lr={lr:.2e}"
-                )
+                print(f"[epoch {epoch:03d} step {step:04d}/{len(train_loader):04d}] loss={loss.item():.4f} lr={lr:.2e}")
 
         n_train = len(train_loader.dataset)
         train_loss /= n_train
@@ -216,23 +216,19 @@ def main() -> None:
         train_dice_loss /= n_train
 
         model.eval()
-        val_loss = 0.0
-        val_bce = 0.0
-        val_dice_loss = 0.0
-        val_dice = 0.0
-        val_iou = 0.0
+        val_loss = val_bce = val_dice_loss = val_dice = val_iou = 0.0
 
         with torch.no_grad():
             for x, y in val_loader:
                 x = x.to(device, non_blocking=True)
                 y = y.to(device, non_blocking=True)
-
-                logits = model(x)
-                loss, bce_v, dloss_v = hybrid_loss(
-                    logits,
+                outputs = model(x)
+                loss, bce_v, dloss_v, logits = compute_total_loss(
+                    outputs,
                     y,
                     bce_ratio=args.BCELoss_ratio,
                     dice_ratio=args.DiceLoss_ratio,
+                    aux_weight=args.aux_weight,
                 )
                 dice, iou = _dice_iou_from_logits(logits, y)
 
@@ -258,7 +254,6 @@ def main() -> None:
             "args": vars(args),
         }
         torch.save(ckpt, last_path)
-
         if val_iou > best_iou:
             best_iou = val_iou
             ckpt["best_iou"] = best_iou
@@ -284,9 +279,7 @@ def main() -> None:
         _append_csv_log(log_csv, log_row)
 
         print(
-            f"[epoch {epoch:03d}] "
-            f"time={elapsed:.1f}s "
-            f"lr={optimizer.param_groups[0]['lr']:.6g} "
+            f"[epoch {epoch:03d}] time={elapsed:.1f}s lr={optimizer.param_groups[0]['lr']:.6g} "
             f"train_loss={train_loss:.4f} (bce={train_bce:.4f}, dice_loss={train_dice_loss:.4f}) "
             f"val_loss={val_loss:.4f} (bce={val_bce:.4f}, dice_loss={val_dice_loss:.4f}) "
             f"val_dice={val_dice:.4f} val_iou={val_iou:.4f}"

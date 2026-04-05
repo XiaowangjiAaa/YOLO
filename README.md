@@ -1,25 +1,32 @@
-# YOLO11 + SCSegamba Core Module Integration (Prototype)
+# YOLO11 + SCSegamba High-Fidelity Replica (Local PyTorch)
 
-你指出的关键问题是对的：如果直接 `pip install ultralytics` 来训练，官方包并不知道我们本地新增的 `SAVSS` 模块。  
-所以这版改成 **本地纯 PyTorch 训练/预测流程**，不依赖外部 ultralytics 安装包来解析模型。
+这版是“高保真复刻”方向：不再只做轻量近似，而是把核心模块与训练策略向 SCSegamba 靠拢。
 
-## 核心模块（已本地落地）
+## 核心模块
 
-- `GBC`：门控瓶颈卷积。  
-- `SASS2D`：四方向结构扫描。  
-- `SAVSSBlock`：`GBC + SASS2D + residual`。  
-- `C2fSAVSS`：YOLO 风格容器。  
+- `GBC`：门控瓶颈卷积。
+- `SAVSS2D`：**可学习状态空间方向扫描**（四方向，带 learnable `a/b/c/d` 递推参数），不是简单 `cumsum`。
+- `SAVSSBlock`：`GBC + SAVSS2D + FFN`。
+- `C2fSAVSS`：YOLO 风格封装。
 
-代码位于 `ultralytics/nn/modules/scsegamba.py`。
+模块实现：`ultralytics/nn/modules/scsegamba.py`。
 
-## 新增：本地训练/预测栈（不依赖 ultralytics 包）
+## 网络结构
 
-- `yolo11_savss/model.py`：定义 `YOLO11SAVSSSeg`（encoder-decoder，内部使用 `C2fSAVSS`）。
-- `yolo11_savss/data.py`：按 SCSegamba 风格读取 `train_img/train_lab` 等目录。
-- `scripts/train_yolo11_savss.py`：本地训练入口（BCE loss，输出 `best.pt/last.pt`）。
-- `scripts/predict_yolo11_savss.py`：本地预测入口（输出二值 mask 图）。
+- `yolo11_savss/model.py` 中 `YOLO11SAVSSSeg` 采用 encoder-decoder + 多尺度融合。
+- 支持 `deep_supervision`，输出主头 + 辅助头用于训练监督。
 
-## 数据目录（与 SCSegamba 风格一致）
+## 训练策略（对齐 SCSegamba 思路）
+
+- 混合损失：`BCELoss_ratio * BCE + DiceLoss_ratio * DiceLoss`
+- 学习率：`PolyLR`
+- 深监督：主输出 + 辅助输出加权（`--aux-weight`）
+- 训练进度可视化：
+  - tqdm/step 打印
+  - `train_log.csv`
+  - `val_vis/`（`RGB | GT | Pred`）
+
+## 数据目录（SCSegamba 风格）
 
 ```text
 <dataset_root>/
@@ -31,47 +38,20 @@
   test_lab/   # 可选
 ```
 
-`*_lab` 为二值 mask（>0 视为前景）。
-
 ## 训练
 
 ```bash
 python scripts/train_yolo11_savss.py \
   --dataset-root /path/to/crack_dataset \
-  --epochs 100 \
+  --epochs 200 \
   --batch-size 8 \
   --image-size 512 \
+  --BCELoss-ratio 0.5 \
+  --DiceLoss-ratio 0.5 \
+  --poly-power 0.9 \
+  --aux-weight 0.4 \
   --device cuda
 ```
-
-
-### 训练策略（对齐 SCSegamba 思路）
-
-当前训练脚本默认使用：
-
-- `HybridLoss = BCELoss_ratio * BCEWithLogits + DiceLoss_ratio * DiceLoss`
-- `lr_scheduler = PolyLR`（按迭代数衰减）
-
-可通过参数调整：
-
-- `--BCELoss-ratio`
-- `--DiceLoss-ratio`
-- `--poly-power`
-- `--min-lr`
-
-
-### 训练过程可视化与日志
-
-训练时会额外产出：
-
-- `runs/local_yolo11_savss/train_log.csv`：每个 epoch 的 loss / dice / iou / lr / 耗时。
-- `runs/local_yolo11_savss/val_vis/`：验证集可视化（拼接 `RGB | GT Mask | Pred Mask`）。
-
-可调参数：
-
-- `--vis-interval`：每隔多少个 epoch 保存一次可视化。
-- `--num-vis-samples`：每次保存多少张样本。
-- `--log-interval`：当环境无 `tqdm` 时，控制 step 级打印频率。
 
 ## 预测
 
@@ -84,9 +64,7 @@ python scripts/predict_yolo11_savss.py \
   --device cuda
 ```
 
-## 可选：转换为 YOLO 分割标签
-
-如果你后续仍想接 YOLO 格式数据，也可以用：
+## 可选：转换为 YOLO 标签
 
 ```bash
 python scripts/prepare_crack_dataset.py \
@@ -94,4 +72,4 @@ python scripts/prepare_crack_dataset.py \
   --dst datasets/crack_yolo
 ```
 
-> 该脚本依赖 `opencv-python`（`cv2`）。
+> 该转换脚本依赖 `opencv-python`（cv2）。

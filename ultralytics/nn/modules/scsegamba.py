@@ -1,9 +1,7 @@
-"""SCSegamba-inspired modules for YOLO11.
+"""High-fidelity SCSegamba-inspired modules for YOLO-style models.
 
-Core idea integration:
-- GBC: gated bottleneck convolution for morphology-aware local modeling.
-- SASS: structure-aware directional scanning to propagate long-range continuity.
-- SAVSSBlock: combines GBC + SASS in one residual block.
+This version upgrades the previous lightweight approximation by replacing
+simple cumulative scans with a learnable state-space directional scan.
 """
 
 from __future__ import annotations
@@ -61,67 +59,121 @@ class GBC(nn.Module):
         return x + residual
 
 
-class SASS2D(nn.Module):
-    """Structure-Aware Scanning Strategy (lightweight 2D adaptation).
+class SAVSS2D(nn.Module):
+    """Learnable 2D directional state-space scan.
 
-    We approximate directional selective scanning using cumulative context in
-    four directions (left->right, right->left, top->down, bottom->up), then
-    gate and fuse the aggregated structural cues.
+    For each direction we run a per-channel recurrence:
+      h_t = a * h_{t-1} + b * x_t
+      y_t = c * h_t + d * x_t
+    where a,b,c,d are learnable vectors.
     """
 
     def __init__(self, c: int, groups: int = 16) -> None:
         super().__init__()
         g = max(1, min(groups, c))
-        self.pre = nn.Sequential(
+        self.in_proj = nn.Sequential(
             nn.Conv2d(c, c, 1, 1, 0, bias=False),
             nn.GroupNorm(g, c),
             nn.SiLU(inplace=True),
         )
+
+        self.a = nn.Parameter(torch.zeros(4, c))
+        self.b = nn.Parameter(torch.ones(4, c))
+        self.c = nn.Parameter(torch.ones(4, c))
+        self.d = nn.Parameter(torch.ones(4, c))
+
         self.gate = nn.Sequential(
             nn.Conv2d(c, c, 1, 1, 0, bias=True),
             nn.Sigmoid(),
         )
-        self.mix = nn.Sequential(
+        self.out_proj = nn.Sequential(
             nn.Conv2d(c, c, 3, 1, 1, groups=c, bias=False),
             nn.Conv2d(c, c, 1, 1, 0, bias=False),
             nn.GroupNorm(g, c),
             nn.SiLU(inplace=True),
         )
 
-    @staticmethod
-    def _scan(x: torch.Tensor, dim: int, reverse: bool = False) -> torch.Tensor:
+    def _scan_sequence(self, seq: torch.Tensor, idx: int) -> torch.Tensor:
+        # seq: (B, C, L)
+        bsz, channels, length = seq.shape
+        a = torch.sigmoid(self.a[idx]).view(1, channels, 1)
+        b = self.b[idx].view(1, channels, 1)
+        c = self.c[idx].view(1, channels, 1)
+        d = self.d[idx].view(1, channels, 1)
+
+        h = torch.zeros((bsz, channels), device=seq.device, dtype=seq.dtype)
+        outs = []
+        for t in range(length):
+            x_t = seq[:, :, t]
+            h = a.squeeze(-1) * h + b.squeeze(-1) * x_t
+            y_t = c.squeeze(-1) * h + d.squeeze(-1) * x_t
+            outs.append(y_t.unsqueeze(-1))
+        return torch.cat(outs, dim=-1)
+
+    def _scan_w(self, x: torch.Tensor, reverse: bool, idx: int) -> torch.Tensor:
+        # (B,C,H,W) -> flatten rows as sequences
         if reverse:
-            x = torch.flip(x, dims=[dim])
-        y = torch.cumsum(x, dim=dim)
+            x = torch.flip(x, dims=[3])
+        bsz, channels, height, width = x.shape
+        seq = x.permute(0, 2, 1, 3).reshape(bsz * height, channels, width)
+        y = self._scan_sequence(seq, idx).reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
         if reverse:
-            y = torch.flip(y, dims=[dim])
+            y = torch.flip(y, dims=[3])
+        return y
+
+    def _scan_h(self, x: torch.Tensor, reverse: bool, idx: int) -> torch.Tensor:
+        # (B,C,H,W) -> flatten cols as sequences
+        if reverse:
+            x = torch.flip(x, dims=[2])
+        bsz, channels, height, width = x.shape
+        seq = x.permute(0, 3, 1, 2).reshape(bsz * width, channels, height)
+        y = self._scan_sequence(seq, idx).reshape(bsz, width, channels, height).permute(0, 2, 3, 1)
+        if reverse:
+            y = torch.flip(y, dims=[2])
         return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pre(x)
-        lr = self._scan(x, dim=3, reverse=False)
-        rl = self._scan(x, dim=3, reverse=True)
-        tb = self._scan(x, dim=2, reverse=False)
-        bt = self._scan(x, dim=2, reverse=True)
+        x = self.in_proj(x)
 
-        fused = (lr + rl + tb + bt) * 0.25
-        gated = fused * self.gate(x)
-        return self.mix(gated)
+        lr = self._scan_w(x, reverse=False, idx=0)
+        rl = self._scan_w(x, reverse=True, idx=1)
+        tb = self._scan_h(x, reverse=False, idx=2)
+        bt = self._scan_h(x, reverse=True, idx=3)
+
+        fused = 0.25 * (lr + rl + tb + bt)
+        fused = fused * self.gate(x)
+        return self.out_proj(fused)
+
+
+class FFN2D(nn.Module):
+    def __init__(self, c: int, mlp_ratio: float = 2.0) -> None:
+        super().__init__()
+        hidden = int(c * mlp_ratio)
+        self.net = nn.Sequential(
+            nn.Conv2d(c, hidden, 1, 1, 0),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, c, 1, 1, 0),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
 
 
 class SAVSSBlock(nn.Module):
-    """SCSegamba-style SAVSS block: GBC + SASS with residual connection."""
+    """High-fidelity SAVSS-style block: GBC + directional SSM scan + FFN."""
 
-    def __init__(self, c: int, groups: int = 16) -> None:
+    def __init__(self, c: int, groups: int = 16, mlp_ratio: float = 2.0) -> None:
         super().__init__()
         self.gbc = GBC(c, groups=groups)
-        self.sass = SASS2D(c, groups=groups)
-        self.proj = nn.Conv2d(c, c, 1, 1, 0, bias=False)
+        self.savss = SAVSS2D(c, groups=groups)
+        self.ffn = FFN2D(c, mlp_ratio=mlp_ratio)
+        self.norm = nn.GroupNorm(max(1, min(groups, c)), c)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = self.gbc(x)
-        y = self.sass(y)
-        return self.proj(y) + x
+        y = self.savss(y) + y
+        y = self.ffn(self.norm(y)) + y
+        return y
 
 
 class C2fSAVSS(nn.Module):
@@ -140,5 +192,6 @@ class C2fSAVSS(nn.Module):
         return self.cv2(torch.cat(y, 1))
 
 
-# Backward compatibility with earlier prototype naming.
+# Compatibility aliases
+SASS2D = SAVSS2D
 C2fGBC = C2fSAVSS

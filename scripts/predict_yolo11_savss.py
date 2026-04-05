@@ -45,7 +45,7 @@ def main() -> None:
     ckpt = torch.load(args.weights, map_location="cpu")
     base_ch = int(ckpt.get("args", {}).get("base_ch", 32))
 
-    model = YOLO11SAVSSSeg(base_ch=base_ch).to(device)
+    model = YOLO11SAVSSSeg(base_ch=base_ch, deep_supervision=False).to(device)
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
 
