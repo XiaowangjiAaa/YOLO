@@ -1,32 +1,51 @@
-# YOLO11 + SCSegamba High-Fidelity Replica (Local PyTorch)
+# YOLO11 + SCSegamba Strict-Aligned Replica (Local PyTorch)
 
-这版是“高保真复刻”方向：不再只做轻量近似，而是把核心模块与训练策略向 SCSegamba 靠拢。
+这版是“严格对齐版”：优先对齐 SCSegamba 的训练参数命名、损失组合、调度策略和数据组织方式。
 
 ## 核心模块
 
 - `GBC`：门控瓶颈卷积。
-- `SAVSS2D`：**可学习状态空间方向扫描**（四方向，带 learnable `a/b/c/d` 递推参数），不是简单 `cumsum`。
+- `SAVSS2D`：可学习状态空间方向扫描（四方向，learnable `a/b/c/d`）。
 - `SAVSSBlock`：`GBC + SAVSS2D + FFN`。
 - `C2fSAVSS`：YOLO 风格封装。
 
-模块实现：`ultralytics/nn/modules/scsegamba.py`。
+实现文件：`ultralytics/nn/modules/scsegamba.py`。
 
-## 网络结构
+## 模型结构
 
-- `yolo11_savss/model.py` 中 `YOLO11SAVSSSeg` 采用 encoder-decoder + 多尺度融合。
-- 支持 `deep_supervision`，输出主头 + 辅助头用于训练监督。
+`yolo11_savss/model.py` 中 `YOLO11SAVSSSeg` 使用 encoder-decoder + 多尺度融合，并支持深监督输出。
 
-## 训练策略（对齐 SCSegamba 思路）
+## 严格对齐训练脚本
 
-- 混合损失：`BCELoss_ratio * BCE + DiceLoss_ratio * DiceLoss`
-- 学习率：`PolyLR`
-- 深监督：主输出 + 辅助输出加权（`--aux-weight`）
-- 训练进度可视化：
-  - tqdm/step 打印
-  - `train_log.csv`
-  - `val_vis/`（`RGB | GT | Pred`）
+`python scripts/train_yolo11_savss.py`
 
-## 数据目录（SCSegamba 风格）
+支持 SCSegamba 风格参数：
+
+- `--dataroot`
+- `--batch_size`
+- `--epochs`
+- `--lr`
+- `--BCELoss_ratio`
+- `--DiceLoss_ratio`
+- `--lr_scheduler` (`PolyLR`/`Cosine`)
+- `--model_path`
+
+并保留本地别名参数（兼容旧调用）：`--dataset-root`、`--batch-size`、`--BCELoss-ratio` 等。
+
+## 训练策略
+
+- `HybridLoss = BCELoss_ratio * BCE + DiceLoss_ratio * DiceLoss`
+- 默认 `PolyLR`
+- 深监督（可开关）：`--deep-supervision / --no-deep-supervision`
+- 辅助头损失权重：`--aux-weight`
+
+## 训练进度可视化
+
+- 控制台：tqdm/step 打印
+- 文件：`train_log.csv`
+- 可视化：`val_vis/`（`RGB | GT | Pred`）
+
+## 数据目录
 
 ```text
 <dataset_root>/
@@ -38,19 +57,18 @@
   test_lab/   # 可选
 ```
 
-## 训练
+## 示例训练命令（严格对齐风格）
 
 ```bash
 python scripts/train_yolo11_savss.py \
-  --dataset-root /path/to/crack_dataset \
+  --dataroot /path/to/crack_dataset \
   --epochs 200 \
-  --batch-size 8 \
-  --image-size 512 \
-  --BCELoss-ratio 0.5 \
-  --DiceLoss-ratio 0.5 \
-  --poly-power 0.9 \
-  --aux-weight 0.4 \
-  --device cuda
+  --batch_size 8 \
+  --lr 0.001 \
+  --BCELoss_ratio 0.5 \
+  --DiceLoss_ratio 0.5 \
+  --lr_scheduler PolyLR \
+  --model_path runs/local_yolo11_savss
 ```
 
 ## 预测
@@ -63,6 +81,10 @@ python scripts/predict_yolo11_savss.py \
   --threshold 0.5 \
   --device cuda
 ```
+
+## 对齐检查表
+
+见 `ALIGNMENT.md`。
 
 ## 可选：转换为 YOLO 标签
 
