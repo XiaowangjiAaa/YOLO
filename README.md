@@ -1,24 +1,24 @@
 # YOLO11 + SCSegamba Strict-Aligned (for YOLO11n purpose)
 
-你的目标是：**精度更高、速度更快、参数更小**。这版按这个目标做了结构调整。
+你说得对：不应该拍脑袋替换，而要做**放哪、放几个、怎么扫描**的系统消融。
 
-## 我们在 YOLO 中替换了哪些模块
+## 我们在 YOLO 里可控替换的模块
 
-在本地 `YOLO11SAVSSSeg` 里并不是“全替换”，而是**选择性替换**：
+可选 stage：`enc1, enc2, enc3, enc4, up1, up2, up3`
 
-- `enc2`、`enc3`、`up3` 使用 `C2fSAVSS`（引入 SCSegamba 思想）
-- `enc1`、`enc4`、`up2`、`up1` 使用 `C2fLite`（保持速度和小参数）
+当前默认（平衡速度与精度）：
+- `enc2, enc3, up3` 使用 `C2fSAVSS`
+- 其他 stage 使用 `C2fLite`
 
-这样是为了平衡精度与速度，不让全网络都跑重型扫描。
+可通过训练参数直接控制：
+- `--savss-stages "enc2,enc3,up3"`
+- `--savss-n 1`（每个被替换 stage 里 SAVSS block 个数）
+- `--scan-impl fast|ssm`
 
-## 速度/显存优化点
+## 扫描方式
 
-1. `SAVSS2D` 增加 `scan_impl`：
-   - `fast`：向量化方向聚合（默认，快）
-   - `ssm`：递推状态扫描（更接近高保真，但慢）
-2. 默认 `base_ch=16`（更接近 yolo11n 轻量预算）
-3. 默认关闭 deep supervision（减少显存和训练耗时）
-4. 支持 AMP：`--amp`
+- `fast`：向量化方向聚合（速度快，显存友好）
+- `ssm`：递推状态扫描（更高保真，但慢且占显存）
 
 ## 严格对齐训练参数（SCSegamba风格）
 
@@ -31,7 +31,7 @@
 - `--lr_scheduler`
 - `--model_path`
 
-## 训练示例（推荐先跑快版）
+## 推荐先跑的“快版”基线
 
 ```bash
 python scripts/train_yolo11_savss.py \
@@ -42,9 +42,32 @@ python scripts/train_yolo11_savss.py \
   --BCELoss_ratio 0.5 \
   --DiceLoss_ratio 0.5 \
   --lr_scheduler PolyLR \
+  --base-ch 16 \
+  --savss-stages enc2,enc3,up3 \
+  --savss-n 1 \
   --scan-impl fast \
-  --model_path runs/yolo11n_savss_fast \
-  --amp
+  --no-deep-supervision \
+  --amp \
+  --model_path runs/yolo11n_savss_fast
+```
+
+## 消融实验（重点）
+
+提供了网格消融脚本和配置：
+
+- 配置：`configs/savss_ablation.json`
+- 脚本：`scripts/ablate_savss.py`
+
+先看命令不执行：
+
+```bash
+python scripts/ablate_savss.py --config configs/savss_ablation.json --dry-run
+```
+
+执行消融：
+
+```bash
+python scripts/ablate_savss.py --config configs/savss_ablation.json
 ```
 
 ## 预测

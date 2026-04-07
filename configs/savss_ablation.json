@@ -1,0 +1,23 @@
+{
+  "base": {
+    "dataroot": "/path/to/crack_dataset",
+    "epochs": 80,
+    "batch_size": 8,
+    "lr": 0.001,
+    "BCELoss_ratio": 0.5,
+    "DiceLoss_ratio": 0.5,
+    "lr_scheduler": "PolyLR",
+    "base_ch": 16,
+    "amp": true
+  },
+  "grid": {
+    "savss_stages": [
+      "enc2,enc3,up3",
+      "enc2,enc3",
+      "enc3,up3",
+      "enc2"
+    ],
+    "savss_n": [1, 2],
+    "scan_impl": ["fast", "ssm"]
+  }
+}

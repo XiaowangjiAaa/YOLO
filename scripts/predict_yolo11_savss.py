@@ -46,8 +46,10 @@ def main() -> None:
     saved_args = ckpt.get("args", {})
     base_ch = int(saved_args.get("base_ch", 16))
     scan_impl = str(saved_args.get("scan_impl", "fast"))
+    savss_stages = str(saved_args.get("savss_stages", "enc2,enc3,up3"))
+    savss_n = int(saved_args.get("savss_n", 1))
 
-    model = YOLO11SAVSSSeg(base_ch=base_ch, deep_supervision=False, scan_impl=scan_impl).to(device)
+    model = YOLO11SAVSSSeg(base_ch=base_ch, deep_supervision=False, scan_impl=scan_impl, savss_stages=savss_stages, savss_n=savss_n).to(device)
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
 

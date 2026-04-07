@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-vis-samples", type=int, default=4)
     p.add_argument("--amp", action="store_true", help="Enable torch AMP on CUDA")
     p.add_argument("--scan-impl", type=str, default="fast", choices=["fast", "ssm"], help="fast=for speed, ssm=for fidelity")
+    p.add_argument("--savss-stages", type=str, default="enc2,enc3,up3", help="comma list: enc1,enc2,enc3,enc4,up1,up2,up3")
+    p.add_argument("--savss-n", type=int, default=1, help="number of SAVSS blocks inside each replaced stage")
 
     args = p.parse_args()
 
@@ -208,9 +210,15 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    model = YOLO11SAVSSSeg(base_ch=args.base_ch, deep_supervision=args.deep_supervision, scan_impl=args.scan_impl).to(device)
+    model = YOLO11SAVSSSeg(
+        base_ch=args.base_ch,
+        deep_supervision=args.deep_supervision,
+        scan_impl=args.scan_impl,
+        savss_stages=args.savss_stages,
+        savss_n=args.savss_n,
+    ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] params={n_params/1e6:.3f}M, scan_impl={args.scan_impl}, deep_supervision={args.deep_supervision}")
+    print(f"[model] params={n_params/1e6:.3f}M, scan_impl={args.scan_impl}, stages={args.savss_stages}, savss_n={args.savss_n}, deep_supervision={args.deep_supervision}")
 
     if args.optim == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
