@@ -43,9 +43,11 @@ def main() -> None:
     args.save_dir.mkdir(parents=True, exist_ok=True)
 
     ckpt = torch.load(args.weights, map_location="cpu")
-    base_ch = int(ckpt.get("args", {}).get("base_ch", 32))
+    saved_args = ckpt.get("args", {})
+    base_ch = int(saved_args.get("base_ch", 16))
+    scan_impl = str(saved_args.get("scan_impl", "fast"))
 
-    model = YOLO11SAVSSSeg(base_ch=base_ch, deep_supervision=False).to(device)
+    model = YOLO11SAVSSSeg(base_ch=base_ch, deep_supervision=False, scan_impl=scan_impl).to(device)
     model.load_state_dict(ckpt["model"], strict=True)
     model.eval()
 

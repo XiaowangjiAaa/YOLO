@@ -32,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--num-workers", type=int, default=2)
     p.add_argument("--device", type=str, default="cuda")
-    p.add_argument("--base-ch", type=int, default=32)
+    p.add_argument("--base-ch", type=int, default=16)
     p.add_argument("--poly-power", type=float, default=0.9)
     p.add_argument("--min-lr", type=float, default=1e-6)
     p.add_argument("--optim", type=str, default="adamw", choices=["adamw", "sgd"])
@@ -42,13 +42,14 @@ def parse_args() -> argparse.Namespace:
     group = p.add_mutually_exclusive_group()
     group.add_argument("--deep-supervision", dest="deep_supervision", action="store_true")
     group.add_argument("--no-deep-supervision", dest="deep_supervision", action="store_false")
-    p.set_defaults(deep_supervision=True)
-    p.add_argument("--aux-weight", type=float, default=0.4)
+    p.set_defaults(deep_supervision=False)
+    p.add_argument("--aux-weight", type=float, default=0.2)
 
     p.add_argument("--log-interval", type=int, default=20)
     p.add_argument("--vis-interval", type=int, default=5)
     p.add_argument("--num-vis-samples", type=int, default=4)
     p.add_argument("--amp", action="store_true", help="Enable torch AMP on CUDA")
+    p.add_argument("--scan-impl", type=str, default="fast", choices=["fast", "ssm"], help="fast=for speed, ssm=for fidelity")
 
     args = p.parse_args()
 
@@ -207,7 +208,10 @@ def main() -> None:
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    model = YOLO11SAVSSSeg(base_ch=args.base_ch, deep_supervision=args.deep_supervision).to(device)
+    model = YOLO11SAVSSSeg(base_ch=args.base_ch, deep_supervision=args.deep_supervision, scan_impl=args.scan_impl).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"[model] params={n_params/1e6:.3f}M, scan_impl={args.scan_impl}, deep_supervision={args.deep_supervision}")
+
     if args.optim == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     else:
