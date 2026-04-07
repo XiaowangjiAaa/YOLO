@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--log-interval", type=int, default=20)
     p.add_argument("--vis-interval", type=int, default=5)
     p.add_argument("--num-vis-samples", type=int, default=4)
+    p.add_argument("--early-stop-patience", type=int, default=50, help="stop if no val_iou improvement for N epochs")
     p.add_argument("--amp", action="store_true", help="Enable torch AMP on CUDA")
     p.add_argument("--scan-impl", type=str, default="fast", choices=["fast", "ssm"], help="fast=for speed, ssm=for fidelity")
     p.add_argument("--savss-stages", type=str, default="enc2,enc3,up3", help="comma list: enc1,enc2,enc3,enc4,up1,up2,up3")
@@ -230,6 +231,7 @@ def main() -> None:
     total_iters = args.epochs * max(1, len(train_loader))
     cur_iter = 0
     best_iou = -1.0
+    best_epoch = 0
     best_path = args.model_path / "best.pt"
     last_path = args.model_path / "last.pt"
     log_csv = args.model_path / "train_log.csv"
@@ -327,6 +329,7 @@ def main() -> None:
         torch.save(ckpt, last_path)
         if val_iou > best_iou:
             best_iou = val_iou
+            best_epoch = epoch
             ckpt["best_iou"] = best_iou
             torch.save(ckpt, best_path)
 
@@ -354,7 +357,12 @@ def main() -> None:
             f"train={train_loss:.4f} val={val_loss:.4f} val_dice={val_dice:.4f} val_iou={val_iou:.4f}"
         )
 
-    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path}")
+        no_improve = epoch - best_epoch
+        if no_improve >= args.early_stop_patience:
+            print(f"[early-stop] no val_iou improvement for {no_improve} epochs (patience={args.early_stop_patience}), stop at epoch {epoch}.")
+            break
+
+    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path} best_epoch={best_epoch}")
 
 
 if __name__ == "__main__":

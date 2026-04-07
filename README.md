@@ -53,6 +53,8 @@ python scripts/train_yolo11_savss.py \
 
 ## 消融实验（重点）
 
+- 提前停止：`--early-stop-patience 50`（若 50 个 epoch 无提升则自动停止）
+
 提供了网格消融脚本和配置：
 
 - 配置：`configs/savss_ablation.json`

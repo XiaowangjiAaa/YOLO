@@ -21,6 +21,7 @@
 - 默认 `scan_impl=fast`
 - 默认 `base_ch=16`，默认关闭 deep supervision
 - 支持 AMP 与模型参数量打印
+- 支持 early-stop（默认 patience=50）
 
 ## 仍可能存在差异（后续迭代）
 
