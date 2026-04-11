@@ -8,16 +8,16 @@
     "DiceLoss_ratio": 0.5,
     "lr_scheduler": "PolyLR",
     "base_ch": 16,
-    "amp": true
+    "amp": true,
+    "scan_impl": "fast"
   },
-  "grid": {
-    "savss_stages": [
-      "enc2,enc3,up3",
-      "enc2,enc3",
-      "enc3,up3",
-      "enc2"
-    ],
-    "savss_n": [1, 2],
-    "scan_impl": ["fast", "ssm"]
-  }
+  "experiments": [
+    {"name": "baseline", "savss_stages": "", "savss_n": 1},
+    {"name": "fast_n1_enc3", "savss_stages": "enc3", "savss_n": 1},
+    {"name": "fast_n1_up3", "savss_stages": "up3", "savss_n": 1},
+    {"name": "fast_n1_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 1},
+    {"name": "fast_n2_enc3", "savss_stages": "enc3", "savss_n": 2},
+    {"name": "fast_n2_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 2},
+    {"name": "fast_n2_up3", "savss_stages": "up3", "savss_n": 2}
+  ]
 }

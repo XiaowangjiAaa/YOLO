@@ -58,7 +58,7 @@ class YOLO11SAVSSSeg(nn.Module):
         num_classes: int = 1,
         deep_supervision: bool = False,
         scan_impl: str = "fast",
-        savss_stages: str = "enc2,enc3,up3",
+        savss_stages: str = "enc3,up3",
         savss_n: int = 1,
     ) -> None:
         super().__init__()

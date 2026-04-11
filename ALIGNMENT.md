@@ -7,18 +7,18 @@
 - 数据目录风格：`train_img/train_lab`, `val_img/val_lab`
 - 训练脚本主入口参数风格：`dataroot`, `epochs`, `batch_size`, `model_path`
 
-## 消融能力（本次新增）
+## 消融能力（本次主线）
 
 - 可控替换位置：`savss_stages`（enc/up 全部可选）
 - 可控替换深度：`savss_n`
 - 可控扫描实现：`scan_impl = fast | ssm`
-- 提供网格消融脚本：`scripts/ablate_savss.py`
-- 提供消融配置样例：`configs/savss_ablation.json`
+- 预置最小实验集（6+1）配置：`configs/savss_ablation.json`
+- 网格/清单执行脚本：`scripts/ablate_savss.py`
 
 ## 为 YOLO11n 目标做的工程化调整
 
 - 选择性替换 SAVSS（不是全网络替换）
-- 默认 `scan_impl=fast`
+- 默认主线为 `fast`
 - 默认 `base_ch=16`，默认关闭 deep supervision
 - 支持 AMP 与模型参数量打印
 - 支持 early-stop（默认 patience=50）

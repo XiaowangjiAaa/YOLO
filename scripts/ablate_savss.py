@@ -1,4 +1,4 @@
-"""Run SAVSS ablation experiments from a JSON grid."""
+"""Run SAVSS ablation experiments (edge-focused default plan)."""
 
 from __future__ import annotations
 
@@ -11,29 +11,62 @@ from pathlib import Path
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Run SAVSS ablation grid")
+    p = argparse.ArgumentParser(description="Run SAVSS ablation plan")
     p.add_argument("--config", type=Path, default=Path("configs/savss_ablation.json"))
     p.add_argument("--project", type=Path, default=Path("runs/ablation_savss"))
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
 
+def build_from_experiments(base: dict, experiments: list[dict], project: Path):
+    jobs = []
+    for i, exp in enumerate(experiments, start=1):
+        name = exp.get("name", f"exp_{i:03d}")
+        jobs.append(
+            {
+                "name": name,
+                "run_dir": project / f"{i:03d}_{name}",
+                "savss_stages": str(exp.get("savss_stages", "enc3,up3")),
+                "savss_n": int(exp.get("savss_n", 1)),
+                "scan_impl": str(exp.get("scan_impl", base.get("scan_impl", "fast"))),
+            }
+        )
+    return jobs
+
+
+def build_from_grid(base: dict, grid: dict, project: Path):
+    stage_list = grid.get("savss_stages", ["enc3,up3"])
+    n_list = grid.get("savss_n", [1])
+    scan_list = grid.get("scan_impl", [base.get("scan_impl", "fast")])
+    jobs = []
+    idx = 0
+    for stages, n, scan_impl in itertools.product(stage_list, n_list, scan_list):
+        idx += 1
+        jobs.append(
+            {
+                "name": f"exp_{idx:03d}_{scan_impl}_n{n}",
+                "run_dir": project / f"exp_{idx:03d}_{scan_impl}_n{n}",
+                "savss_stages": str(stages),
+                "savss_n": int(n),
+                "scan_impl": str(scan_impl),
+            }
+        )
+    return jobs
+
+
 def main() -> None:
     args = parse_args()
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
     base = cfg.get("base", {})
-    grid = cfg.get("grid", {})
-
-    stage_list = grid.get("savss_stages", ["enc2,enc3,up3"])
-    n_list = grid.get("savss_n", [1])
-    scan_list = grid.get("scan_impl", ["fast"])
 
     args.project.mkdir(parents=True, exist_ok=True)
 
-    idx = 0
-    for stages, n, scan_impl in itertools.product(stage_list, n_list, scan_list):
-        idx += 1
-        run_dir = args.project / f"exp_{idx:03d}_{scan_impl}_n{n}"
+    if "experiments" in cfg:
+        jobs = build_from_experiments(base, cfg["experiments"], args.project)
+    else:
+        jobs = build_from_grid(base, cfg.get("grid", {}), args.project)
+
+    for job in jobs:
         cmd = [
             sys.executable,
             "scripts/train_yolo11_savss.py",
@@ -54,22 +87,21 @@ def main() -> None:
             "--base-ch",
             str(base.get("base_ch", 16)),
             "--savss-stages",
-            stages,
+            job["savss_stages"],
             "--savss-n",
-            str(n),
+            str(job["savss_n"]),
             "--scan-impl",
-            scan_impl,
+            job["scan_impl"],
             "--model_path",
-            str(run_dir),
+            str(job["run_dir"]),
         ]
 
         if bool(base.get("amp", True)):
             cmd.append("--amp")
 
-        if args.dry_run:
-            print("[dry-run]", " ".join(cmd))
-        else:
-            print("[run]", " ".join(cmd))
+        prefix = "[dry-run]" if args.dry_run else "[run]"
+        print(prefix, job["name"], "::", " ".join(cmd))
+        if not args.dry_run:
             subprocess.run(cmd, check=True)
 
 

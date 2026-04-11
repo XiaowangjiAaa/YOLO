@@ -51,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--early-stop-patience", type=int, default=50, help="stop if no val_iou improvement for N epochs")
     p.add_argument("--amp", action="store_true", help="Enable torch AMP on CUDA")
     p.add_argument("--scan-impl", type=str, default="fast", choices=["fast", "ssm"], help="fast=for speed, ssm=for fidelity")
-    p.add_argument("--savss-stages", type=str, default="enc2,enc3,up3", help="comma list: enc1,enc2,enc3,enc4,up1,up2,up3")
+    p.add_argument("--savss-stages", type=str, default="enc3,up3", help="comma list: enc1,enc2,enc3,enc4,up1,up2,up3")
     p.add_argument("--savss-n", type=int, default=1, help="number of SAVSS blocks inside each replaced stage")
 
     args = p.parse_args()
