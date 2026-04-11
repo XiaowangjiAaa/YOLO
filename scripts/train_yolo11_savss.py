@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import sys
 import time
 from pathlib import Path
+
+# 将项目根目录加入系统路径
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(ROOT))
 
 
 def parse_args() -> argparse.Namespace:
@@ -193,6 +198,40 @@ def _append_csv_log(csv_path: Path, row: dict):
         w.writerow(row)
 
 
+def estimate_conv_flops(model, image_size: int, device):
+    import torch
+    from torch import nn
+
+    flops = 0
+    hooks = []
+
+    def hook_fn(module, inp, out):
+        nonlocal flops
+        if not isinstance(module, nn.Conv2d):
+            return
+        x = inp[0]
+        batch = x.shape[0]
+        out_h, out_w = out.shape[-2:]
+        k_h, k_w = module.kernel_size
+        in_c = module.in_channels
+        out_c = module.out_channels
+        groups = module.groups
+        conv_per_position = (in_c // groups) * k_h * k_w * out_c
+        flops += batch * out_h * out_w * conv_per_position
+
+    for m in model.modules():
+        if isinstance(m, nn.Conv2d):
+            hooks.append(m.register_forward_hook(hook_fn))
+
+    with torch.no_grad():
+        dummy = torch.randn(1, 3, image_size, image_size, device=device)
+        _ = model(dummy)
+
+    for h in hooks:
+        h.remove()
+    return float(flops)
+
+
 def main() -> None:
     args = parse_args()
     import torch
@@ -219,7 +258,8 @@ def main() -> None:
         savss_n=args.savss_n,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
-    print(f"[model] params={n_params/1e6:.3f}M, scan_impl={args.scan_impl}, stages={args.savss_stages}, savss_n={args.savss_n}, deep_supervision={args.deep_supervision}")
+    est_flops = estimate_conv_flops(model, args.image_size, device)
+    print(f"[model] params={n_params/1e6:.3f}M, est_flops={est_flops/1e9:.3f}G, scan_impl={args.scan_impl}, stages={args.savss_stages}, savss_n={args.savss_n}, deep_supervision={args.deep_supervision}")
 
     if args.optim == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -362,7 +402,22 @@ def main() -> None:
             print(f"[early-stop] no val_iou improvement for {no_improve} epochs (patience={args.early_stop_patience}), stop at epoch {epoch}.")
             break
 
-    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path} best_epoch={best_epoch}")
+    summary_path = args.model_path / "run_summary.csv"
+    with summary_path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=["best_miou", "best_epoch", "params", "est_flops", "scan_impl", "savss_stages", "savss_n", "deep_supervision"])
+        w.writeheader()
+        w.writerow({
+            "best_miou": f"{best_iou:.6f}",
+            "best_epoch": best_epoch,
+            "params": n_params,
+            "est_flops": int(est_flops),
+            "scan_impl": args.scan_impl,
+            "savss_stages": args.savss_stages,
+            "savss_n": args.savss_n,
+            "deep_supervision": args.deep_supervision,
+        })
+
+    print(f"[done] best_iou={best_iou:.4f} best_ckpt={best_path} best_epoch={best_epoch} summary={summary_path}")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import itertools
 import json
 import subprocess
@@ -66,6 +67,8 @@ def main() -> None:
     else:
         jobs = build_from_grid(base, cfg.get("grid", {}), args.project)
 
+    rows = []
+
     for job in jobs:
         cmd = [
             sys.executable,
@@ -103,6 +106,34 @@ def main() -> None:
         print(prefix, job["name"], "::", " ".join(cmd))
         if not args.dry_run:
             subprocess.run(cmd, check=True)
+            summary_file = job["run_dir"] / "run_summary.csv"
+            if summary_file.exists():
+                with summary_file.open("r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for r in reader:
+                        r["experiment"] = job["name"]
+                        rows.append(r)
+            else:
+                rows.append({
+                    "experiment": job["name"],
+                    "best_miou": "",
+                    "best_epoch": "",
+                    "params": "",
+                    "est_flops": "",
+                    "scan_impl": job["scan_impl"],
+                    "savss_stages": job["savss_stages"],
+                    "savss_n": job["savss_n"],
+                    "deep_supervision": "",
+                })
+
+    if not args.dry_run and rows:
+        out_csv = args.project / "ablation_summary.csv"
+        keys = ["experiment", "best_miou", "best_epoch", "params", "est_flops", "scan_impl", "savss_stages", "savss_n", "deep_supervision"]
+        with out_csv.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"[summary] wrote {out_csv}")
 
 
 if __name__ == "__main__":

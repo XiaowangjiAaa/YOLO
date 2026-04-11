@@ -73,6 +73,19 @@ python scripts/ablate_savss.py --config configs/savss_ablation.json --dry-run
 python scripts/ablate_savss.py --config configs/savss_ablation.json
 ```
 
+
+## 统计指标
+
+每次训练会自动写出 `run_summary.csv`，包含：
+
+- `best_miou`
+- `params`
+- `est_flops`（Conv FLOPs 估计）
+
+跑消融脚本后，会在项目目录下汇总为：
+
+- `runs/ablation_savss/ablation_summary.csv`
+
 ## 预测
 
 ```bash

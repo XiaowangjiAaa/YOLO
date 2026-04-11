@@ -14,6 +14,7 @@
 - 可控扫描实现：`scan_impl = fast | ssm`
 - 预置最小实验集（6+1）配置：`configs/savss_ablation.json`
 - 网格/清单执行脚本：`scripts/ablate_savss.py`
+- 自动汇总：`ablation_summary.csv`（含 mIoU/params/FLOPs）
 
 ## 为 YOLO11n 目标做的工程化调整
 
