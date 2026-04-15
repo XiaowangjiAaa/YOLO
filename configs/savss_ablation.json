@@ -9,15 +9,21 @@
     "lr_scheduler": "PolyLR",
     "base_ch": 16,
     "amp": true,
-    "scan_impl": "fast"
+    "scan_impl": "fast",
+    "ssm_mode": "dynamic"
   },
   "experiments": [
-    {"name": "baseline", "savss_stages": "", "savss_n": 1},
-    {"name": "fast_n1_enc3", "savss_stages": "enc3", "savss_n": 1},
-    {"name": "fast_n1_up3", "savss_stages": "up3", "savss_n": 1},
-    {"name": "fast_n1_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 1},
-    {"name": "fast_n2_enc3", "savss_stages": "enc3", "savss_n": 2},
-    {"name": "fast_n2_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 2},
-    {"name": "fast_n2_up3", "savss_stages": "up3", "savss_n": 2}
+    {"name": "baseline", "savss_stages": "", "savss_n": 1, "scan_impl": "fast"},
+    {"name": "fast_n1_enc3", "savss_stages": "enc3", "savss_n": 1, "scan_impl": "fast"},
+    {"name": "fast_n1_up3", "savss_stages": "up3", "savss_n": 1, "scan_impl": "fast"},
+    {"name": "fast_n1_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 1, "scan_impl": "fast"},
+    {"name": "fast_n2_enc3", "savss_stages": "enc3", "savss_n": 2, "scan_impl": "fast"},
+    {"name": "fast_n2_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 2, "scan_impl": "fast"},
+    {"name": "fast_n2_up3", "savss_stages": "up3", "savss_n": 2, "scan_impl": "fast"},
+
+    {"name": "ssm_static_n1_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 1, "scan_impl": "ssm", "ssm_mode": "static"},
+    {"name": "ssm_dynamic_n1_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 1, "scan_impl": "ssm", "ssm_mode": "dynamic"},
+    {"name": "ssm_static_n2_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 2, "scan_impl": "ssm", "ssm_mode": "static"},
+    {"name": "ssm_dynamic_n2_enc3_up3", "savss_stages": "enc3,up3", "savss_n": 2, "scan_impl": "ssm", "ssm_mode": "dynamic"}
   ]
 }

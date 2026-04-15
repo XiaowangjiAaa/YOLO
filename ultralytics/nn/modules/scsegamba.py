@@ -1,7 +1,9 @@
-"""SCSegamba-inspired modules with speed/accuracy tradeoff modes.
+"""SCSegamba-inspired modules with selective/dynamic SSM options.
 
-- `scan_impl='ssm'`: learnable directional recurrence (higher fidelity, slower)
-- `scan_impl='fast'`: vectorized directional aggregation (faster, lighter)
+- `scan_impl='fast'`: vectorized directional aggregation (fast)
+- `scan_impl='ssm'`: directional state-space scan
+  - `ssm_mode='static'` : fixed a,b,c,d parameters
+  - `ssm_mode='dynamic'`: input-conditioned a,b,c,d (Mamba-like selective)
 """
 
 from __future__ import annotations
@@ -41,11 +43,12 @@ class GBC(nn.Module):
 
 
 class SAVSS2D(nn.Module):
-    """Directional scanner with selectable implementation mode."""
+    """Directional scanner with selectable implementation + SSM mode."""
 
-    def __init__(self, c: int, groups: int = 16, scan_impl: str = "fast") -> None:
+    def __init__(self, c: int, groups: int = 16, scan_impl: str = "fast", ssm_mode: str = "dynamic") -> None:
         super().__init__()
         self.scan_impl = scan_impl
+        self.ssm_mode = ssm_mode
         g = max(1, min(groups, c))
         self.in_proj = nn.Sequential(
             nn.Conv2d(c, c, 1, 1, 0, bias=False),
@@ -60,13 +63,16 @@ class SAVSS2D(nn.Module):
             nn.SiLU(inplace=True),
         )
 
-        # parameters used only in ssm mode
+        # static parameters
         self.a = nn.Parameter(torch.zeros(4, c))
         self.b = nn.Parameter(torch.ones(4, c))
         self.c = nn.Parameter(torch.ones(4, c))
         self.d = nn.Parameter(torch.ones(4, c))
 
-    def _scan_sequence_ssm(self, seq: torch.Tensor, idx: int) -> torch.Tensor:
+        # dynamic projections (per direction) for selective scan
+        self.dynamic_proj = nn.ModuleList(nn.Conv1d(c, 4 * c, 1, 1, 0) for _ in range(4))
+
+    def _scan_sequence_static(self, seq: torch.Tensor, idx: int) -> torch.Tensor:
         bsz, channels, length = seq.shape
         a = torch.sigmoid(self.a[idx]).view(1, channels)
         b = self.b[idx].view(1, channels)
@@ -81,6 +87,27 @@ class SAVSS2D(nn.Module):
             outs.append(y_t.unsqueeze(-1))
         return torch.cat(outs, dim=-1)
 
+    def _scan_sequence_dynamic(self, seq: torch.Tensor, idx: int) -> torch.Tensor:
+        # seq: (B, C, L); coefficients are input-conditioned per time step
+        coeff = self.dynamic_proj[idx](seq)  # (B, 4C, L)
+        a_t, b_t, c_t, d_t = torch.chunk(coeff, 4, dim=1)
+        a_t = torch.sigmoid(a_t)
+
+        bsz, channels, length = seq.shape
+        h = torch.zeros((bsz, channels), device=seq.device, dtype=seq.dtype)
+        outs = []
+        for t in range(length):
+            x_t = seq[:, :, t]
+            h = a_t[:, :, t] * h + b_t[:, :, t] * x_t
+            y_t = c_t[:, :, t] * h + d_t[:, :, t] * x_t
+            outs.append(y_t.unsqueeze(-1))
+        return torch.cat(outs, dim=-1)
+
+    def _scan_sequence(self, seq: torch.Tensor, idx: int) -> torch.Tensor:
+        if self.ssm_mode == "dynamic":
+            return self._scan_sequence_dynamic(seq, idx)
+        return self._scan_sequence_static(seq, idx)
+
     def _scan_fast(self, x: torch.Tensor) -> torch.Tensor:
         lr = torch.cumsum(x, dim=3)
         rl = torch.flip(torch.cumsum(torch.flip(x, dims=[3]), dim=3), dims=[3])
@@ -91,19 +118,19 @@ class SAVSS2D(nn.Module):
     def _scan_ssm(self, x: torch.Tensor) -> torch.Tensor:
         bsz, channels, height, width = x.shape
         seq_lr = x.permute(0, 2, 1, 3).reshape(bsz * height, channels, width)
-        y_lr = self._scan_sequence_ssm(seq_lr, 0).reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
+        y_lr = self._scan_sequence(seq_lr, 0).reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
 
         x_rl = torch.flip(x, dims=[3])
         seq_rl = x_rl.permute(0, 2, 1, 3).reshape(bsz * height, channels, width)
-        y_rl = self._scan_sequence_ssm(seq_rl, 1).reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
+        y_rl = self._scan_sequence(seq_rl, 1).reshape(bsz, height, channels, width).permute(0, 2, 1, 3)
         y_rl = torch.flip(y_rl, dims=[3])
 
         seq_tb = x.permute(0, 3, 1, 2).reshape(bsz * width, channels, height)
-        y_tb = self._scan_sequence_ssm(seq_tb, 2).reshape(bsz, width, channels, height).permute(0, 2, 3, 1)
+        y_tb = self._scan_sequence(seq_tb, 2).reshape(bsz, width, channels, height).permute(0, 2, 3, 1)
 
         x_bt = torch.flip(x, dims=[2])
         seq_bt = x_bt.permute(0, 3, 1, 2).reshape(bsz * width, channels, height)
-        y_bt = self._scan_sequence_ssm(seq_bt, 3).reshape(bsz, width, channels, height).permute(0, 2, 3, 1)
+        y_bt = self._scan_sequence(seq_bt, 3).reshape(bsz, width, channels, height).permute(0, 2, 3, 1)
         y_bt = torch.flip(y_bt, dims=[2])
 
         return 0.25 * (y_lr + y_rl + y_tb + y_bt)
@@ -125,10 +152,10 @@ class FFN2D(nn.Module):
 
 
 class SAVSSBlock(nn.Module):
-    def __init__(self, c: int, groups: int = 16, mlp_ratio: float = 1.5, scan_impl: str = "fast") -> None:
+    def __init__(self, c: int, groups: int = 16, mlp_ratio: float = 1.5, scan_impl: str = "fast", ssm_mode: str = "dynamic") -> None:
         super().__init__()
         self.gbc = GBC(c, groups=groups)
-        self.savss = SAVSS2D(c, groups=groups, scan_impl=scan_impl)
+        self.savss = SAVSS2D(c, groups=groups, scan_impl=scan_impl, ssm_mode=ssm_mode)
         self.ffn = FFN2D(c, mlp_ratio=mlp_ratio)
         self.norm = nn.GroupNorm(max(1, min(groups, c)), c)
 
@@ -139,12 +166,12 @@ class SAVSSBlock(nn.Module):
 
 
 class C2fSAVSS(nn.Module):
-    def __init__(self, c1: int, c2: int, n: int = 1, e: float = 0.5, scan_impl: str = "fast") -> None:
+    def __init__(self, c1: int, c2: int, n: int = 1, e: float = 0.5, scan_impl: str = "fast", ssm_mode: str = "dynamic") -> None:
         super().__init__()
         self.c = int(c2 * e)
         self.cv1 = nn.Conv2d(c1, 2 * self.c, 1, 1)
         self.cv2 = nn.Conv2d((2 + n) * self.c, c2, 1, 1)
-        self.m = nn.ModuleList(SAVSSBlock(self.c, scan_impl=scan_impl) for _ in range(n))
+        self.m = nn.ModuleList(SAVSSBlock(self.c, scan_impl=scan_impl, ssm_mode=ssm_mode) for _ in range(n))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = list(self.cv1(x).chunk(2, 1))

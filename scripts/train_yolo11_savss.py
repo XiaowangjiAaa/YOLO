@@ -56,6 +56,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--early-stop-patience", type=int, default=50, help="stop if no val_iou improvement for N epochs")
     p.add_argument("--amp", action="store_true", help="Enable torch AMP on CUDA")
     p.add_argument("--scan-impl", type=str, default="fast", choices=["fast", "ssm"], help="fast=for speed, ssm=for fidelity")
+    p.add_argument("--ssm-mode", type=str, default="dynamic", choices=["dynamic", "static"], help="when scan-impl=ssm: dynamic selective or static")
     p.add_argument("--savss-stages", type=str, default="enc3,up3", help="comma list: enc1,enc2,enc3,enc4,up1,up2,up3")
     p.add_argument("--savss-n", type=int, default=1, help="number of SAVSS blocks inside each replaced stage")
 
@@ -256,10 +257,11 @@ def main() -> None:
         scan_impl=args.scan_impl,
         savss_stages=args.savss_stages,
         savss_n=args.savss_n,
+        ssm_mode=args.ssm_mode,
     ).to(device)
     n_params = sum(p.numel() for p in model.parameters())
     est_flops = estimate_conv_flops(model, args.image_size, device)
-    print(f"[model] params={n_params/1e6:.3f}M, est_flops={est_flops/1e9:.3f}G, scan_impl={args.scan_impl}, stages={args.savss_stages}, savss_n={args.savss_n}, deep_supervision={args.deep_supervision}")
+    print(f"[model] params={n_params/1e6:.3f}M, est_flops={est_flops/1e9:.3f}G, scan_impl={args.scan_impl}, ssm_mode={args.ssm_mode}, stages={args.savss_stages}, savss_n={args.savss_n}, deep_supervision={args.deep_supervision}")
 
     if args.optim == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -404,7 +406,7 @@ def main() -> None:
 
     summary_path = args.model_path / "run_summary.csv"
     with summary_path.open("w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=["best_miou", "best_epoch", "params", "est_flops", "scan_impl", "savss_stages", "savss_n", "deep_supervision"])
+        w = csv.DictWriter(f, fieldnames=["best_miou", "best_epoch", "params", "est_flops", "scan_impl", "ssm_mode", "savss_stages", "savss_n", "deep_supervision"])
         w.writeheader()
         w.writerow({
             "best_miou": f"{best_iou:.6f}",
@@ -412,6 +414,7 @@ def main() -> None:
             "params": n_params,
             "est_flops": int(est_flops),
             "scan_impl": args.scan_impl,
+            "ssm_mode": args.ssm_mode,
             "savss_stages": args.savss_stages,
             "savss_n": args.savss_n,
             "deep_supervision": args.deep_supervision,

@@ -30,6 +30,7 @@ def build_from_experiments(base: dict, experiments: list[dict], project: Path):
                 "savss_stages": str(exp.get("savss_stages", "enc3,up3")),
                 "savss_n": int(exp.get("savss_n", 1)),
                 "scan_impl": str(exp.get("scan_impl", base.get("scan_impl", "fast"))),
+                "ssm_mode": str(exp.get("ssm_mode", base.get("ssm_mode", "dynamic"))),
             }
         )
     return jobs
@@ -50,6 +51,7 @@ def build_from_grid(base: dict, grid: dict, project: Path):
                 "savss_stages": str(stages),
                 "savss_n": int(n),
                 "scan_impl": str(scan_impl),
+                "ssm_mode": str(base.get("ssm_mode", "dynamic")),
             }
         )
     return jobs
@@ -95,6 +97,8 @@ def main() -> None:
             str(job["savss_n"]),
             "--scan-impl",
             job["scan_impl"],
+            "--ssm-mode",
+            job["ssm_mode"],
             "--model_path",
             str(job["run_dir"]),
         ]
@@ -121,6 +125,7 @@ def main() -> None:
                     "params": "",
                     "est_flops": "",
                     "scan_impl": job["scan_impl"],
+                    "ssm_mode": job["ssm_mode"],
                     "savss_stages": job["savss_stages"],
                     "savss_n": job["savss_n"],
                     "deep_supervision": "",
@@ -128,7 +133,7 @@ def main() -> None:
 
     if not args.dry_run and rows:
         out_csv = args.project / "ablation_summary.csv"
-        keys = ["experiment", "best_miou", "best_epoch", "params", "est_flops", "scan_impl", "savss_stages", "savss_n", "deep_supervision"]
+        keys = ["experiment", "best_miou", "best_epoch", "params", "est_flops", "scan_impl", "ssm_mode", "savss_stages", "savss_n", "deep_supervision"]
         with out_csv.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=keys)
             writer.writeheader()
